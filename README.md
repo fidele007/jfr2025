@@ -39,8 +39,6 @@ You can preview the production build with `bun run preview`.
 
 ## Generating static website
 
-The following command is shorthand for `npm run build && npx gh-pages -d build -t true`
-
 ```sh
-npm run gh-pages
+bun run deploy
 ```

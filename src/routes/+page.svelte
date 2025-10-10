@@ -50,12 +50,11 @@
 	};
 
 	const searchSessions = async (value: string) => {
-		// console.log('Searching for: ', value);
 		loading = true;
 
 		// await new Promise(r => setTimeout(r, 3000));
 
-		const scopedSessions = sessionsByDate[selectedDate];
+		const scopedSessions = sessionsByDate[selectedDate] ?? sessionsByDate[''];
 		if (onlyVideos) {
 			filteredSessions = value
 				? scopedSessions.filter((x: any) => x.picture && eventContainString(x, value))
