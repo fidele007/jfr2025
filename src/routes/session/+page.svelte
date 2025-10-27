@@ -11,6 +11,8 @@
 	import Speakers from '$lib/Speakers.svelte';
 	import Switch from '$lib/Switch.svelte';
 
+	const USE_YOUTUBE_PLAYER = true;
+
 	const MEDIA_HISTORY_LIMIT = 25;
 
 	const searchParams = browser && $page.url.searchParams;
@@ -29,7 +31,9 @@
 	let moderators: [any];
 	let responsables: [any];
 
+	let player: any;
 	let currentMedia: any;
+	let previousMedia: any;
 	let autoplay: boolean = $prefs?.autoplay ?? false;
 
 	let mediaList: {
@@ -42,21 +46,23 @@
 		speakers: [any] | null;
 	}[] = [];
 
-	const fileExists = (fileUrl: string) => {
-		var http = new XMLHttpRequest();
-
-		http.open('HEAD', fileUrl, false);
-		http.send();
-
-		return http.status != 404;
-	};
-
 	const getBestMediaSource = (media: any) => {
 		if (screen.width <= 1024 && media.url) {
 			return media.url;
 		}
 
 		return media.hdUrl;
+	};
+
+	const getVideoUrl = (videoMapping: { [key: string]: string }, originalUrl: string) => {
+		if (!USE_YOUTUBE_PLAYER || !originalUrl) {
+			return originalUrl;
+		}
+
+		const videoId = originalUrl.split('/video/')[0].split('/').pop();
+		return videoId && videoId in videoMapping
+			? `https://www.youtube.com/embed/${videoMapping[videoId]}`
+			: originalUrl;
 	};
 
 	onMount(async () => {
@@ -74,14 +80,18 @@
 		responsables = eventDetail.roles.find((role: any) => role.name === 'responsable')?.assignees
 			.items;
 
+		const videoMapping = USE_YOUTUBE_PLAYER
+			? await (await fetch(`${base}/json/yt-video-mapping.json`)).json()
+			: {};
+
 		// Add publicly available media to the media list
 		for (const item of eventDetail.schedule.items) {
 			if (item.vod && item.vod.media && item.vod.media.element && item.vod.media.element.sources) {
 				mediaList.push({
 					id: item.vod.media.id,
 					title: item.vod.media.id ? item.title : `${item.title} Ⓜ️`,
-					hdUrl: item.vod.media.element.sources[0].uri,
-					url: item.vod.media.element.sources[1]?.uri,
+					hdUrl: getVideoUrl(videoMapping, item.vod.media.element.sources[0].uri),
+					url: getVideoUrl(videoMapping, item.vod.media.element.sources[1]?.uri),
 					thumbnail: item.vod.media.thumbnail,
 					start: item.start.split('T')[1].split('+')[0],
 					speakers: item.speakers.items
@@ -98,58 +108,80 @@
 			mediaList.push({
 				id: eventDetail.vod.media.id,
 				title: eventDetail.vod.media.title ?? '[Sans titre]',
-				hdUrl: eventDetail.vod.media.element.sources[0].uri,
-				url: eventDetail.vod.media.element.sources[1]?.uri,
+				hdUrl: getVideoUrl(videoMapping, eventDetail.vod.media.element.sources[0].uri),
+				url: getVideoUrl(videoMapping, eventDetail.vod.media.element.sources[1]?.uri),
 				thumbnail: eventDetail.vod.media.thumbnail,
 				start: eventDetail.start.split('T')[1].split('+')[0],
 				speakers: eventDetail.speakers.items
 			});
 		}
 
-		// Check and add hidden media
-		// if (eventDetail.picture) {
-		// 	// e.g. https://services.medicalcongress.online/congress/medias/2023/JFR-2023/2072/video/thumbs/poster.jpg
-		// 	const hiddenMedia: any = {
-		// 		id: null,
-		// 		title: '[Non répertoriée]',
-		// 		thumbnail: eventDetail.picture,
-		// 		start: eventDetail.start.split('T')[1].split('+')[0],
-		// 		speakers: null
-		// 	};
-
-		// 	const possibleHDVideoUrl =
-		// 		eventDetail.picture.split('/video/')[0] + '/video/y_1080p_4000kb.mp4';
-		// 	const addHdUrl = !mediaList.some((item) => item.hdUrl === possibleHDVideoUrl) && fileExists(possibleHDVideoUrl);
-		// 	if (addHdUrl) {
-		// 		hiddenMedia.hdUrl = possibleHDVideoUrl;
-		// 	}
-
-		// 	const possibleVideoUrl =
-		// 		eventDetail.picture.split('/video/')[0] + '/video/y_480p_800kb.mp4';
-		// 	const addUrl = !mediaList.some((item) => item.url === possibleVideoUrl) && fileExists(possibleVideoUrl);
-		// 	if (addUrl) {
-		// 		hiddenMedia.url = possibleVideoUrl;
-		// 	}
-
-		// 	if (hiddenMedia.hdUrl || hiddenMedia.url) {
-		// 		mediaList.push(hiddenMedia);
-		// 	}
-		// }
-
 		mediaList = mediaList.toSorted((a: any, b: any) => a.start.localeCompare(b.start));
 
 		if (mediaList.length > 0) {
 			if (selectedMediaUrl) {
-				currentMedia = mediaList.find((item) => item.hdUrl === selectedMediaUrl);
+				previousMedia = currentMedia = mediaList.find((item) => item.hdUrl === selectedMediaUrl);
 			}
 
 			if (!currentMedia) {
-				currentMedia = mediaList[0];
+				previousMedia = currentMedia = mediaList[0];
 			}
 		}
 
 		loading = false;
+
+		if (USE_YOUTUBE_PLAYER) {
+			window.onYouTubeIframeAPIReady = () => {
+				const videoId = currentMedia.hdUrl.split('/').pop();
+				player = new YT.Player('player', {
+					videoId: videoId,
+					playerVars: {
+						modestbranding: 1,
+						playsinline: 1,
+						controls: 2,
+						autoplay: autoplay ? 1 : 0,
+						rel: 0 // Disable related videos at the end
+					},
+					events: {
+						onStateChange: onPlayerStateChange
+					}
+				});
+			};
+
+			// Load YouTube IFrame API asynchronously
+			const tag = document.createElement('script');
+			tag.src = 'https://www.youtube.com/iframe_api';
+			document.body.appendChild(tag);
+
+			// Cleanup on destroy
+			return () => {
+				if (player && player.destroy) {
+					player.destroy();
+				}
+				delete window.onYouTubeIframeAPIReady;
+			};
+		}
 	});
+
+	const onPlayerStateChange = (event: any) => {
+		if (event.data === YT.PlayerState.PLAYING) {
+			onMediaPlay(currentMedia);
+		} else if (event.data === YT.PlayerState.ENDED) {
+			onMediaEnded(currentMedia);
+		}
+	};
+
+	const playMedia = (media: any) => {
+		if (!USE_YOUTUBE_PLAYER || !player || !media || media === previousMedia) {
+			return;
+		}
+
+		const videoId = media.hdUrl.split('/').pop();
+		player.loadVideoById(videoId);
+		onMediaPlay(media);
+
+		previousMedia = media;
+	};
 
 	const onMediaPlay = (media: any) => {
 		const filteredArray = $mediaHistory.filter((item: any) => item.hdUrl !== media.hdUrl);
@@ -172,10 +204,12 @@
 		const mediaIndex = mediaList.indexOf(media);
 		if (mediaIndex < mediaList.length - 1) {
 			currentMedia = mediaList[mediaIndex + 1];
+			playMedia(currentMedia);
 		}
 	};
 
 	$: if ($prefs) $prefs = { autoplay: autoplay };
+	$: currentMedia, playMedia(currentMedia);
 </script>
 
 <svelte:head>
@@ -216,17 +250,21 @@
 						{/if}
 					</div>
 					<div id="video-container">
-						<video
-							{autoplay}
-							controls
-							class="video-player"
-							src={getBestMediaSource(currentMedia)}
-							poster={currentMedia.thumbnail}
-							on:play={() => onMediaPlay(currentMedia)}
-							on:ended={() => onMediaEnded(currentMedia)}
-						>
-							<track kind="captions" />
-						</video>
+						{#if USE_YOUTUBE_PLAYER}
+							<div id="player"></div>
+						{:else}
+							<video
+								{autoplay}
+								controls
+								class="video-player"
+								src={getBestMediaSource(currentMedia)}
+								poster={currentMedia.thumbnail}
+								on:play={() => onMediaPlay(currentMedia)}
+								on:ended={() => onMediaEnded(currentMedia)}
+							>
+								<track kind="captions" />
+							</video>
+						{/if}
 					</div>
 					<div class="detail screen-big" style="border-left-color: {eventDetail.sessionTypeColor}">
 						<div class="session-header">
@@ -526,8 +564,14 @@
 		min-height: 411px;
 	}
 
-	video {
+	#video-container > video {
 		width: 100%;
+	}
+
+	#player {
+		aspect-ratio: 16 / 9;
+		width: 100%;
+		height: auto;
 	}
 
 	.playlist-container {
