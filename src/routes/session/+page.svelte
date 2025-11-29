@@ -140,7 +140,11 @@
 						playsinline: 1,
 						controls: 2,
 						autoplay: autoplay ? 1 : 0,
-						rel: 0 // Disable related videos at the end
+						// [START] Disable related videos at the end
+						rel: 0,
+						showinfo: 0,
+						ecver: 2
+						// [END] Disable related videos at the end
 					},
 					events: {
 						onStateChange: onPlayerStateChange
